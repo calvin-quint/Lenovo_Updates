@@ -81,7 +81,7 @@ function Write-Log {
     )
 
     $logDirectory = Get-LogDirectory
-    $logFilePath = "$logDirectory\AzureAD_MembershipCopy_Log.txt"
+    $logFilePath = "$logDirectory\LenovoUpdates_Log.txt"
 
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $logMessage = "[$timestamp] [$level] $message"
