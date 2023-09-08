@@ -9,7 +9,7 @@
     in update processes, and checks for administrative privileges to guarantee successful execution.
     
 .NOTES
-    File Name      : Lenovo_Updates.ps1
+    File Name      : Lenovo-SoftwareUpdate.ps1
     Author         : Calvin Quint
     Prerequisite   : LSUClient module, Package Provider NuGet version 2.8.5.201
     License        : GNU GPL
