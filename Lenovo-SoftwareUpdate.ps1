@@ -22,154 +22,101 @@
     
 #>
 
-function Test-OneDrive {
-    if ($env:OneDrive -ne $null -and $env:OneDrive -ne "") {
-        return $true
-    } else {
-        return $false
-    }
-}
+# Set up logging
+$logFile = "update_lenovo.log"
+$maxLogSize = 100MB  # Maximum log size in bytes
 
-# Function that determines the appropriate directory path for storing log files based on the presence of OneDrive. 
-# It returns the path to the log directory within the user's Documents folder, accounting for OneDrive if it is available, 
-# simplifying log file management in PowerShell scripts.
-function Get-LogDirectory {
-    if (Test-OneDrive) {
-        return "$env:OneDrive\Documents\Scripts\Powershell\Logs"
-    } else {
-        return "$env:USERPROFILE\Documents\Scripts\Powershell\Logs"
-    }
-}
+function Log($message) {
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logMessage = "$timestamp - $message"
+    Write-Host $logMessage
+    $logMessage | Out-File -Append -FilePath $logFile
 
-# Function that ensures the existence of a specified directory and log file, creating them if they don't exist. It provides error handling and logging, 
-# making it a valuable utility for maintaining a structured logging environment in PowerShell scripts.
-function Ensure-DirectoryAndLogFile {
-    param (
-        [string]$directoryPath,
-        [string]$logFilePath
-    )
-
-    if (-not (Test-Path -Path $directoryPath -PathType Container)) {
-        try {
-            New-Item -Path $directoryPath -ItemType Directory -Force
-            Write-Log "Directory created: $($directoryPath)" "INFO"
-        } catch {
-            Write-Host "Failed to create directory: $($directoryPath)"
-            Write-Host "Error: $_"
-            exit 1
-        }
-    }
-
-    if (-not (Test-Path -Path $logFilePath)) {
-        try {
-            $null | Out-File -FilePath $logFilePath -Force
-            Write-Log "Log file created: $logFilePath" "INFO"
-        } catch {
-            Write-Host "Failed to create log file: $logFilePath"
-            Write-Host "Error: $_"
-            exit 1
+    # Check log file size and truncate if necessary
+    $logFileSize = (Get-Item $logFile).Length
+    if ($logFileSize -gt $maxLogSize) {
+        Write-Host "Log file size exceeds maximum limit. Truncating..."
+        $logContent = Get-Content $logFile -Raw
+        $startIndex = $logContent.IndexOf("`n", [math]::Max(0, $logContent.Length - $maxLogSize))
+        if ($startIndex -ge 0) {
+            $truncatedContent = $logContent.Substring($startIndex + 1)
+            $truncatedContent | Set-Content $logFile
+            Write-Host "Log file truncated."
         }
     }
 }
 
-# Function that records log messages with timestamps and color-coded levels (INFO in Yellow and ERROR in Red), displaying them in the console and appending them to a log file. 
-# It also manages log file size by performing log rotation when it exceeds a defined limit, ensuring effective logging and file management in PowerShell scripts.
-function Write-Log {
-    param(
-        [string]$message,
-        [string]$level
-    )
+# Log user who ran the script
+$executingUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+Log "Script executed by user: $executingUser"
 
-    $logDirectory = Get-LogDirectory
-    $logFilePath = "$logDirectory\LenovoUpdates_Log.txt"
+# Retrieve the computer manufacturer and model
+$manufacturer = (Get-WmiObject Win32_ComputerSystem).Manufacturer
+$model = (Get-WmiObject Win32_ComputerSystem).Model
+Log "Computer Manufacturer: $manufacturer"
+Log "Computer Model: $model"
 
-    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $logMessage = "[$timestamp] [$level] $message"
+# List of allowed computer models
+$allowedModels = @(
+    "20XF004FUS",
+    "21BR002TUS",
+    "20XF004FUS",
+    "20UD003LUS",
+    "20WM0081US"
+    # Add more allowed models here
+)
 
-    # Define colors for INFO and ERROR log levels
-    $infoColor = "Yellow"
-    $errorColor = "Red"
+# Check if computer model is allowed or add it to allowedModels
+if ($manufacturer -eq "LENOVO" -and $model -notin $allowedModels) {
+    Log "Adding current model ($model) to allowedModels..."
+    $allowedModels += $model
+}
 
-    # Display the log message in the console with the appropriate color
-    if ($level -eq "INFO") {
-        Write-Host $logMessage -ForegroundColor $infoColor
-    } elseif ($level -eq "ERROR") {
-        Write-Host $logMessage -ForegroundColor $errorColor
-    } else {
-        Write-Host $logMessage
-    }
+# Define the required NuGet version
+$nugetVersionRequired = [Version]'2.8.5.201'
 
-    # Ensure the log directory and log file exist using the combined function
-    Ensure-DirectoryAndLogFile -directoryPath $logDirectory -logFilePath $logFilePath
+# Check and install/update NuGet Provider, logging actions as needed
+$currentNuGetProvider = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
+if (!$currentNuGetProvider) {
+    Log "Installing NuGet Provider version $nugetVersionRequired..."
+    Install-PackageProvider -Name NuGet -Force -MinimumVersion $nugetVersionRequired
+    Log "NuGet Provider version $nugetVersionRequired installed."
+} elseif ($currentNuGetProvider.Version -lt $nugetVersionRequired) {
+    Log "Updating NuGet Provider to version $nugetVersionRequired..."
+    Uninstall-PackageProvider -Name NuGet -Force
+    Install-PackageProvider -Name NuGet -Force -MinimumVersion $nugetVersionRequired
+    Log "NuGet Provider updated to version $nugetVersionRequired."
+} else {
+    Log "NuGet Provider is up to date."
+}
 
-    # Append the log message to the log file
-    $logMessage | Out-File -FilePath $logFilePath -Append
+# Install the PSWindowsUpdate module if not already installed
+if (-not (Get-Module -ListAvailable -Name PSWindowsUpdate)) {
+    Install-Module -Name PSWindowsUpdate -Force -Scope CurrentUser
+}
 
-    # Get the current log file size
-    $currentFileSize = (Get-Item $logFilePath).Length
+# Import the module
+Import-Module PSWindowsUpdate
 
-    # Define the maximum log file size (100MB)
-    $maxLogSize = 100MB
+# Log Windows updates
+$windowsUpdates = Get-WUInstall -WindowsUpdate -AcceptAll -IgnoreReboot
 
-    # If the current log file size exceeds the maximum, perform log rotation
-    if ($currentFileSize -gt $maxLogSize) {
-        $linesToKeep = 500  # Define the maximum number of log lines to keep
-        $logContent = Get-Content -Path $logFilePath -TotalCount $linesToKeep
-        $logContent | Out-File -FilePath $logFilePath -Force
+if ($windowsUpdates.Count -eq 0) {
+    Log "No Windows updates are available."
+} else {
+    $windowsUpdates | ForEach-Object {
+        Log "Windows update found: $($_.Title)"
     }
 }
 
-function Install-AndImportModule {
-    param(
-        [string]$moduleName,
-        [string]$moduleCheckCommand
-    )
+# Import the LSUClient module if not installed
+$moduleInstalled = Get-Module -ListAvailable | Where-Object { $_.Name -eq 'LSUClient' }
 
-    $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-    if (-not $isAdmin) {
-        Write-Log "This script requires administrator rights to install the $moduleName module. Please run the script as an administrator." "ERROR"
-        exit
-    }
-
-    if (-not (Get-Module -Name $moduleName -ListAvailable)) {
-        Write-Log "Installing $moduleName module..." "INFO"
-        Install-Module -Name $moduleName -Force
-    }
-
-    Import-Module $moduleName -ErrorAction Stop
-}
-
-
-function Install-AndImportPackageProvider {
-    param (
-        [string]$providerName,
-        [string]$minimumVersion
-    )
-
-    $currentProvider = Get-PackageProvider -Name $providerName -ErrorAction SilentlyContinue
-
-    if (!$currentProvider) {
-        $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-        if (-not $isAdmin) {
-            Write-Log "This script requires administrator rights to install the $providerName provider. Please run the script as an administrator." "ERROR"
-            exit
-        }
-
-        Write-Log "Installing $providerName provider version $minimumVersion..." "INFO"
-        Install-PackageProvider -Name $providerName -Force -MinimumVersion $minimumVersion
-        Write-Log "$providerName provider version $minimumVersion installed." "INFO"
-    } else {
-        if ([Version]$currentProvider.Version -lt [Version]$minimumVersion) {
-            Write-Log "Updating $providerName provider to version $minimumVersion..." "INFO"
-            Uninstall-PackageProvider -Name $providerName -Force
-            Install-PackageProvider -Name $providerName -Force -MinimumVersion $minimumVersion
-            Write-Log "$providerName provider updated to version $minimumVersion." "INFO"
-        } else {
-            Write-Log "$providerName provider is up to date." "INFO"
-        }
-    }
+if (-not $moduleInstalled) {
+    Log "LSUClient module is not installed. Installing..."
+    Install-Module -Name LSUClient -Force
+} else {
+    Log "LSUClient module is already installed."
 }
 
 # Function to install updates that require user interaction
@@ -177,15 +124,15 @@ function Install-InteractiveUpdates {
     $updates = Get-LSUpdate | Where-Object { $_.Installer.Unattended -eq $false }
 
     if ($updates.Count -eq 0) {
-        Write-Log "No Lenovo updates requiring user interaction available." "INFO"
+        Log "No Lenovo updates requiring user interaction available."
     } else {
-        Write-Log "Installing Lenovo updates requiring user interaction..." "INFO"
+        Log "Installing Lenovo updates requiring user interaction..."
         $updates | ForEach-Object {
-            Write-Log "Installing Lenovo update: $($_.Title)" "INFO"
+            Log "Installing Lenovo update: $($_.Title)"
             Install-LSUpdate $_ -Verbose
-            Write-Log "Update installed: $($_.Title)" "INFO"
+            Log "Update installed: $($_.Title)"
         }
-        Write-Log "All Lenovo updates requiring user interaction installed." "INFO"
+        Log "All Lenovo updates requiring user interaction installed."
     }
 }
 
@@ -194,15 +141,15 @@ function Install-UnattendedUpdates {
     $updates = Get-LSUpdate | Where-Object { $_.Installer.Unattended -eq $true }
 
     if ($updates.Count -eq 0) {
-        Write-Log "No unattended Lenovo updates available." "INFO"
+        Log "No unattended Lenovo updates available."
     } else {
-        Write-Log "Installing unattended Lenovo updates..." "INFO"
+        Log "Installing unattended Lenovo updates..."
         $updates | ForEach-Object {
-            Write-Log "Installing unattended update: $($_.Title)" "INFO"
+            Log "Installing unattended update: $($_.Title)"
             Install-LSUpdate $_ -Verbose
-            Write-Log "Update installed: $($_.Title)" "INFO"
+            Log "Update installed: $($_.Title)"
         }
-        Write-Log "All unattended Lenovo updates installed." "INFO"
+        Log "All unattended Lenovo updates installed."
     }
 }
 
@@ -212,63 +159,54 @@ function Test-InteractiveUser {
     return -not $tsProperty
 }
 
-function Check-RebootRequired {
-    param (
-        [bool]$rebootRequired
-    )
+# Install unattended Lenovo updates
+Install-UnattendedUpdates
 
-    if ($rebootRequired) {
-        $rebootUpdates = Get-LSUpdate | Where-Object { $_.RequiresReboot }
-        if ($rebootUpdates) {
-            do {
-                $restartOption = Read-Host "Lenovo updates have been installed and a reboot is required. Do you want to restart your computer? (Y/N)"
-            } while ($restartOption -ne 'Y' -and $restartOption -ne 'N' -and $restartOption -ne 'y' -and $restartOption -ne 'n')
+# Check for interactive user and install updates requiring user interaction
+$rebootRequired = $false
+if (Test-InteractiveUser) {
+    Log "Interactive user detected. Installing Lenovo updates requiring user interaction..."
+    $rebootRequired = $true
+    Install-InteractiveUpdates
+}
 
-            if ($restartOption -eq 'Y' -or $restartOption -eq 'y') {
-                Write-Log "Restarting computer..." "INFO"
-                Restart-Computer -Force
-            } else {
-                Write-Log "No restart requested." "INFO"
-            }
+# Check if reboot is required and prompt the user
+$rebootRequiredForWindowsUpdates = $windowsUpdates | Where-Object { $_.RequiresReboot }
+$rebootRequiredForLenovoUpdates = Get-LSUpdate | Where-Object { $_.RequiresReboot }
+
+if ($rebootRequired -or $rebootRequiredForWindowsUpdates -or $rebootRequiredForLenovoUpdates) {
+    $rebootType = ""
+
+    if ($rebootRequiredForWindowsUpdates) {
+        $rebootType += "Windows"
+    }
+
+    if ($rebootRequiredForLenovoUpdates) {
+        if ($rebootType -ne "") {
+            $rebootType += " and "
+        }
+        $rebootType += "Lenovo"
+    }
+
+    $rebootMessage = "Updates have been installed and a reboot is required for $rebootType updates. Do you want to restart your computer? (Y/N)"
+
+    $rebootUpdates = $rebootRequiredForWindowsUpdates + $rebootRequiredForLenovoUpdates
+
+    if ($rebootUpdates) {
+        $restartOption = Read-Host $rebootMessage
+        if ($restartOption -eq 'Y' -or $restartOption -eq 'y') {
+            Log "Restarting computer..."
+            Restart-Computer -Force
         } else {
-            Write-Log "No updates requiring reboot installed." "INFO"
+            Log "No restart requested."
         }
     } else {
-        Write-Log "No interactive user detected. Rebooting computer..." "INFO"
-        Restart-Computer -Force
+        Log "No updates requiring reboot installed."
     }
+} else {
+    Log "No interactive user detected. Rebooting computer..."
+    Restart-Computer -Force
 }
 
-function Main {
-    Write-Log "Starting script execution." "INFO"
-
-    # Step 1: Install and import required module if needed
-    Install-AndImportModule -moduleName "LSUClient" -moduleCheckCommand "Get-Module -Name LSUClient -ListAvailable"
-
-    $nugetVersionRequired = '2.8.5.201'
-
-    # Step 2: Install NuGet provider if needed
-    Install-AndImportPackageProvider -providerName 'NuGet' -minimumVersion $nugetVersionRequired
-
-    # Step 3: Install unattended updates
-    Install-UnattendedUpdates
-
-    # Step 4: Test for interactive user
-    $isInteractiveUser = Test-InteractiveUser
-
-    # Step 5: Install interactive updates if there is a user
-    if ($isInteractiveUser) {
-        Install-InteractiveUpdates
-    }
-
-    # Step 6: Test for and reboot if required
-    if (Check-RebootRequired) {
-        Write-Log "Reboot is required. Initiating reboot." "INFO"
-        Restart-Computer -Force
-    }
-
-    Write-Log "Script execution completed." "INFO"
-}
-
-# Execute the main script
-Main | Out-Null
+# Log script finish time
+Log "Script completed."
